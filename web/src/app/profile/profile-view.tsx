@@ -145,6 +145,11 @@ export function ProfileView() {
 
 function ShareSection({ profileReady, defaultYear }: { profileReady: boolean; defaultYear: number }) {
   const [roll, setRoll] = useState("");
+  // Sharing is tied to the roll number the student signed in with.
+  useEffect(() => {
+    fetch("/api/auth/status", { cache: "no-store" }).then((r) => r.json())
+      .then((s: { roll: string | null }) => { if (s.roll) setRoll(s.roll); }).catch(() => {});
+  }, []);
   const [year, setYear] = useState(String(defaultYear));
   const [consent, setConsent] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -172,7 +177,7 @@ function ShareSection({ profileReady, defaultYear }: { profileReady: boolean; de
     <Section title="3. Share with the placement cell (optional)" id="share">
       <p className="text-sm text-muted">Adds your confirmed profile to your batch&apos;s dashboard so the placement cell can plan training. Your roll number becomes an irreversible code; your name, contact details and CV are never shared. You can withdraw at any time.</p>
       <div className="mt-3 grid gap-3 sm:grid-cols-2">
-        <Field label="Roll / enrolment number" htmlFor="roll"><input id="roll" autoComplete="off" className={inputClass} value={roll} onChange={(e) => setRoll(e.target.value)} /></Field>
+        <Field label="Roll / enrolment number" htmlFor="roll"><input id="roll" readOnly aria-readonly className={inputClass} value={roll} title="The roll number you signed in with" /></Field>
         <Field label="Graduating batch" htmlFor="share-year">
           <select id="share-year" className={inputClass} value={year} onChange={(e) => setYear(e.target.value)}>{[0, 1, 2, 3, 4].map((d) => <option key={d}>{YEAR + d}</option>)}</select>
         </Field>

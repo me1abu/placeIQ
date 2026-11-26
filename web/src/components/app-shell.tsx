@@ -4,14 +4,14 @@ import { usePathname } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
 import { LogOut, Menu, X } from "lucide-react";
 import { cn } from "@/lib/cn";
-import { isActive, NAV } from "@/lib/nav";
+import { isActive, navFor, type NavRole } from "@/lib/nav";
 import { Wordmark } from "./logo";
 import { ThemeToggle } from "./theme-toggle";
 
-function NavLinks({ pathname, onNavigate }: { pathname: string; onNavigate?: () => void }) {
+function NavLinks({ pathname, role, onNavigate }: { pathname: string; role: NavRole; onNavigate?: () => void }) {
   return (
     <nav aria-label="Main" className="flex flex-col gap-0.5">
-      {NAV.map((group, gi) => (
+      {navFor(role).map((group, gi) => (
         <div key={gi} className={cn(gi > 0 && "mt-4")}>
           {group.title && <p className="px-3 pb-1.5 font-mono text-[10px] font-semibold uppercase tracking-[0.18em] text-faint">{group.title}</p>}
           {group.items.map(({ href, label, icon: Icon }) => {
@@ -36,32 +36,40 @@ function NavLinks({ pathname, onNavigate }: { pathname: string; onNavigate?: () 
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
-  const [cellSession, setCellSession] = useState(false);
+  const [who, setWho] = useState<{ role: NavRole; roll: string | null }>({ role: "guest", roll: null });
   useEffect(() => setOpen(false), [pathname]);
   useEffect(() => {
     fetch("/api/auth/status", { cache: "no-store" }).then((r) => r.json())
-      .then((s: { enabled: boolean; signedIn: boolean }) => setCellSession(s.enabled && s.signedIn)).catch(() => {});
+      .then((s: { role: "student" | "cell" | null; roll: string | null }) => setWho({ role: s.role ?? "guest", roll: s.roll }))
+      .catch(() => {});
   }, [pathname]);
 
   async function signOut() {
     await fetch("/api/auth/logout", { method: "POST" }).catch(() => {});
-    setCellSession(false);
-    window.location.assign("/");
+    setWho({ role: "guest", roll: null });
+    window.location.assign("/login");
   }
+
+  const account = who.role !== "guest" && (
+    <div className="flex flex-col gap-1">
+      <p className="px-2 text-xs text-muted">
+        Signed in as <span className="font-medium text-foreground">{who.role === "cell" ? "Placement cell" : who.roll ?? "student"}</span>
+      </p>
+      <button type="button" onClick={signOut} className="inline-flex min-h-9 items-center gap-2 rounded-md px-2 text-xs text-muted hover:bg-surface-hover hover:text-foreground">
+        <LogOut className="size-4" />Sign out
+      </button>
+    </div>
+  );
 
   return (
     <div className="min-h-screen md:flex">
       {/* Desktop sidebar */}
       <aside className="sticky top-0 hidden h-screen w-64 shrink-0 flex-col border-r border-border bg-background px-3 py-5 md:flex">
         <Link href="/" className="mb-6 px-2" aria-label="PlaceIQ home"><Wordmark /></Link>
-        <div className="min-h-0 flex-1 overflow-y-auto no-scrollbar"><NavLinks pathname={pathname} /></div>
+        <div className="min-h-0 flex-1 overflow-y-auto no-scrollbar"><NavLinks pathname={pathname} role={who.role} /></div>
         <div className="mt-4 flex flex-col gap-2 border-t border-border pt-3">
           <ThemeToggle />
-          {cellSession && (
-            <button type="button" onClick={signOut} className="inline-flex min-h-9 items-center gap-2 rounded-md px-2 text-xs text-muted hover:bg-surface-hover hover:text-foreground">
-              <LogOut className="size-4" />Sign out of placement cell
-            </button>
-          )}
+          {account}
           <p className="px-2 text-[11px] leading-4 text-faint">Your profile stays in this browser. Nothing is shared unless you choose to.</p>
         </div>
       </aside>
@@ -84,7 +92,8 @@ export function AppShell({ children }: { children: ReactNode }) {
               <Wordmark />
               <button type="button" onClick={() => setOpen(false)} aria-label="Close menu" className="inline-flex size-11 items-center justify-center rounded-md hover:bg-surface-hover"><X className="size-5" /></button>
             </div>
-            <div className="overflow-y-auto"><NavLinks pathname={pathname} onNavigate={() => setOpen(false)} /></div>
+            <div className="min-h-0 flex-1 overflow-y-auto"><NavLinks pathname={pathname} role={who.role} onNavigate={() => setOpen(false)} /></div>
+            {account && <div className="mt-4 border-t border-border pt-3">{account}</div>}
           </div>
         </div>
       )}

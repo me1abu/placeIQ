@@ -48,19 +48,44 @@ CV_FOLDS = 5
 def database_url() -> str:
     """SQLite file by default (zero install). Set DATABASE_URL for PostgreSQL, e.g.
     postgresql+psycopg://user:pass@localhost:5432/placeiq (needs `pip install psycopg[binary]`)."""
-    return os.environ.get("DATABASE_URL") or f"sqlite:///{(PQ_DIR / 'placeiq.db').as_posix()}"
+    url = os.environ.get("DATABASE_URL", "").strip()
+    if not url:
+        return f"sqlite:///{(PQ_DIR / 'placeiq.db').as_posix()}"
+    # Hosted Postgres (Neon, Supabase, Render) hands out postgres:// or postgresql:// URLs;
+    # point SQLAlchemy at the psycopg 3 driver that requirements-runtime.txt installs.
+    for prefix in ("postgres://", "postgresql://"):
+        if url.startswith(prefix):
+            return "postgresql+psycopg://" + url[len(prefix):]
+    return url
 
 
-def ensure_env() -> bool:
-    """Add PLACEIQ_SALT to .env if missing (appending, never rewriting other entries).
-    Returns True if anything was added."""
+# Secrets PlaceIQ needs, with how to make each one. start.bat passes .env to the web app too.
+#   PLACEIQ_SALT            hashes roll numbers (changing it orphans shared profiles and accounts)
+#   PLACEIQ_SESSION_SECRET  signs sign-in cookies (changing it signs everyone out)
+#   PLACEIQ_ADMIN_PASSWORD  the placement-cell password (edit it in .env to choose your own)
+_SECRETS = {
+    "PLACEIQ_SALT": lambda: secrets.token_hex(32),
+    "PLACEIQ_SESSION_SECRET": lambda: secrets.token_hex(32),
+    "PLACEIQ_ADMIN_PASSWORD": lambda: secrets.token_urlsafe(9),
+}
+
+
+def ensure_env(web: bool = False) -> list[str]:
+    """Add missing PlaceIQ secrets to .env (appending, never rewriting other entries) and return
+    the names added. The engine itself needs only the salt; `web=True` (python -m placeiq init,
+    run by start.bat) also adds the web app's session secret and placement-cell password, so
+    other commands (e.g. the Docker build) never write those into a file."""
     load_dotenv(ENV_PATH, override=False)
-    if os.environ.get("PLACEIQ_SALT"):
-        return False
-    block = ("\n# --- PlaceIQ (local secrets; never commit this file) ---\n"
-             f"PLACEIQ_SALT={secrets.token_hex(32)}\n"
-             "# DATABASE_URL=postgresql+psycopg://user:pass@localhost:5432/placeiq\n")
+    names = list(_SECRETS) if web else ["PLACEIQ_SALT"]
+    missing = [k for k in names if not os.environ.get(k)]
+    if not missing:
+        return []
+    fresh = not ENV_PATH.exists() or "--- PlaceIQ" not in ENV_PATH.read_text(encoding="utf-8")
+    lines = ["", "# --- PlaceIQ (local secrets; never commit this file) ---"] if fresh else [""]
+    lines += [f"{k}={_SECRETS[k]()}" for k in missing]
+    if fresh:
+        lines.append("# DATABASE_URL=postgresql+psycopg://user:pass@localhost:5432/placeiq")
     with ENV_PATH.open("a", encoding="utf-8") as f:
-        f.write(block)
+        f.write("\n".join(lines) + "\n")
     load_dotenv(ENV_PATH, override=True)
-    return True
+    return missing

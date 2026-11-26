@@ -5,30 +5,37 @@
 The PlaceIQ web app reaches it server-side through its /api/engine/* proxy, so the browser
 never talks to this service directly.
 
-Student flow (public): POST /api/parse (PDF → draft; nothing stored) → student corrects →
+Student flow: POST /api/parse (PDF → draft; nothing stored) → student corrects →
 POST /api/predict → optionally POST /api/students (consented, hashed roll number).
-Placement-cell routes live under /api/admin/*. They have no password: the server only listens
-on 127.0.0.1, so it is reachable from this computer alone.
+Placement-cell routes live under /api/admin/*.
+
+Sign-in is enforced by the web app, which is the only thing that can reach this service (it
+listens on 127.0.0.1). The web app checks passwords through /api/auth/* and, for a signed-in
+student, sends their roll-number hash in the X-PlaceIQ-Student header so /api/students can
+only save or withdraw that student's own profile.
 """
 from __future__ import annotations
 
 import io
 import json
 import re
+import secrets
 from datetime import timezone
 
 import pandas as pd
-from fastapi import APIRouter, Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from placeiq import config
-from placeiq.api.schemas import AnnotationIn, CohortRequest, CvText, Profile, ScoreRequest, StudentKey, StudentSave
+from placeiq.accounts import MIN_PASSWORD, burn_time, hash_password, verify_password
+from placeiq.api.schemas import (AnnotationIn, CohortRequest, Credentials, CvText, Profile, RollNumber, ScoreRequest,
+                                 StudentKey, StudentSave)
 from placeiq.cohort import primary_gaps, summarize
 from placeiq.data.anonymize import hash_identifier, strip_contact_info
-from placeiq.db import Annotation, StudentRecord, get_session
+from placeiq.db import Annotation, StudentAccount, StudentRecord, _now, get_session
 from placeiq.eligibility.filter import eligible_companies, load_companies
 from placeiq.explain.guidance import load_bundle, report
 from placeiq.explain.whatif import score, suggestions
@@ -164,11 +171,49 @@ def student_roadmap(profile: Profile):
     return roadmap(b, profile.model_dump())
 
 
+def _own_hash(roll: str, signed_in: str | None) -> str:
+    """Hash of `roll`; when the web app says who is signed in, it must be that student."""
+    h = _hash(roll)
+    if signed_in is not None and not secrets.compare_digest(h, signed_in):
+        raise HTTPException(403, "You can only share or withdraw your own profile (the roll number you signed in with).")
+    return h
+
+
+# ---------------------------------------------------------------- student accounts
+# Called only by the web app's server (not forwarded from browsers by its proxy).
+@api.post("/auth/register")
+def register(body: Credentials, db: Session = Depends(get_session)):
+    if len(body.password) < MIN_PASSWORD:
+        raise HTTPException(422, f"Choose a password of at least {MIN_PASSWORD} characters.")
+    h = _hash(body.roll_number)
+    if db.scalar(select(StudentAccount).where(StudentAccount.student_hash == h)) is not None:
+        raise HTTPException(409, "An account already exists for this roll number. Sign in instead, "
+                                 "or ask the placement cell to reset it.")
+    db.add(StudentAccount(student_hash=h, password_hash=hash_password(body.password), last_login_at=_now()))
+    db.commit()
+    return {"student_hash": h}
+
+
+@api.post("/auth/login")
+def login(body: Credentials, db: Session = Depends(get_session)):
+    h = _hash(body.roll_number)
+    acct = db.scalar(select(StudentAccount).where(StudentAccount.student_hash == h))
+    if acct is None:
+        burn_time(body.password)
+        raise HTTPException(401, "Incorrect roll number or password.")
+    if not verify_password(body.password, acct.password_hash):
+        raise HTTPException(401, "Incorrect roll number or password.")
+    acct.last_login_at = _now()
+    db.commit()
+    return {"student_hash": h}
+
+
 @api.post("/students")
-def save_student(body: StudentSave, db: Session = Depends(get_session)):
+def save_student(body: StudentSave, db: Session = Depends(get_session),
+                 x_placeiq_student: str | None = Header(default=None)):
     if not body.consent:
         raise HTTPException(400, "Consent is required to share your profile with the placement cell.")
-    h = _hash(body.roll_number)
+    h = _own_hash(body.roll_number, x_placeiq_student)
     record = body.profile.model_dump()
     prob = report(bundle(), record)["probability"]
     row = db.scalar(select(StudentRecord).where(StudentRecord.student_hash == h,
@@ -186,8 +231,9 @@ def save_student(body: StudentSave, db: Session = Depends(get_session)):
 
 
 @api.post("/students/withdraw")
-def withdraw_student(body: StudentKey, db: Session = Depends(get_session)):
-    h = _hash(body.roll_number)
+def withdraw_student(body: StudentKey, db: Session = Depends(get_session),
+                     x_placeiq_student: str | None = Header(default=None)):
+    h = _own_hash(body.roll_number, x_placeiq_student)
     row = db.scalar(select(StudentRecord).where(StudentRecord.student_hash == h,
                                                 StudentRecord.batch_year == body.batch_year))
     if row is None:
@@ -291,6 +337,23 @@ async def train_model(file: UploadFile = File(...), primary: str = Form("logisti
         raise HTTPException(422, f"Could not train on this file: {exc}") from exc
     reset_bundle()
     return result
+
+
+@admin.post("/accounts/reset")
+def reset_account(body: RollNumber, db: Session = Depends(get_session)):
+    """Forgotten password: delete the student's sign-in so they can register again.
+    Their shared profiles are kept (they are keyed by the same roll-number hash)."""
+    acct = db.scalar(select(StudentAccount).where(StudentAccount.student_hash == _hash(body.roll_number)))
+    if acct is None:
+        raise HTTPException(404, "No account for that roll number.")
+    db.delete(acct)
+    db.commit()
+    return {"reset": True}
+
+
+@admin.get("/accounts/count")
+def account_count(db: Session = Depends(get_session)):
+    return {"accounts": db.scalar(select(func.count()).select_from(StudentAccount))}
 
 
 @admin.get("/companies")

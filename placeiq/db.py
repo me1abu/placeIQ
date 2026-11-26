@@ -3,6 +3,7 @@
 Tables
 - student_records: profiles students chose to share with the placement cell (consented),
   keyed by a salted hash of the roll number. No names, emails, phones or resume text.
+- student_accounts: student sign-ins (roll-number hash + password hash).
 - annotations: the hand-labelled resumes for the extraction study (§4.3). Text is stored
   with contact details stripped so the evaluation can be re-run when the extractor changes;
   delete the set once the study is reported.
@@ -50,6 +51,18 @@ class StudentRecord(Base):
                 "internships": self.internships, "projects": self.projects,
                 "certifications": self.certifications,
                 "skills": [s for s in self.skills.split(";") if s]}
+
+
+class StudentAccount(Base):
+    """A student's sign-in. Like student_records it is keyed by the salted roll-number hash,
+    so the roll number itself is never stored; the password is kept only as a PBKDF2 hash."""
+    __tablename__ = "student_accounts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    student_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class Annotation(Base):

@@ -195,6 +195,9 @@ export const api = {
 }
 
 export const adminApi = {
+  accountCount: () => call<{ accounts: number }>('/admin/accounts/count'),
+  resetAccount: (roll_number: string) =>
+    call<{ reset: boolean }>('/admin/accounts/reset', json({ roll_number })),
   batches: () => call<{ batch_year: number; count: number }[]>('/admin/batches'),
   cohortFromDb: (year: number) => call<CohortSummary>(`/admin/cohort?batch_year=${year}`),
   cohortFromProfiles: (profiles: Profile[]) => call<CohortSummary>('/admin/cohort', json({ profiles })),
@@ -216,22 +219,41 @@ export const adminApi = {
 export type StoredProfile = Partial<Profile> & { name?: string; batch_year?: number; updated_at?: string }
 
 // The student's confirmed profile lives in this browser only (localStorage), so a deployed
-// PlaceIQ never mixes students up and never stores anyone's profile on the server.
-const PROFILE_KEY = 'placeiq:profile'
+// PlaceIQ never stores anyone's profile on the server. It is kept per signed-in student
+// (placeiq_who cookie), so two students sharing a lab computer never see each other's profile.
+const LEGACY_KEY = 'placeiq:profile'
+
+function profileKey(): string | null {
+  const m = typeof document === 'undefined' ? null : document.cookie.match(/(?:^|;\s*)placeiq_who=([^;]+)/)
+  return m && m[1] !== 'cell' ? `placeiq:profile:${m[1]}` : null
+}
 
 export const profileApi = {
   get: async (): Promise<StoredProfile | null> => {
+    const key = profileKey()
+    if (!key) return null
     try {
-      const raw = localStorage.getItem(PROFILE_KEY)
+      let raw = localStorage.getItem(key)
+      const legacy = localStorage.getItem(LEGACY_KEY)
+      if (legacy !== null) {
+        // Profiles saved before sign-in existed belong to whoever signs in first on this browser.
+        if (!raw) { localStorage.setItem(key, legacy); raw = legacy }
+        localStorage.removeItem(LEGACY_KEY)
+      }
       return raw ? (JSON.parse(raw) as StoredProfile) : null
     } catch { return null }
   },
   save: async (p: StoredProfile): Promise<StoredProfile> => {
+    const key = profileKey()
+    if (!key) throw new ApiError('Sign in as a student to save your profile.', 401)
     const out = { ...p, updated_at: new Date().toISOString() }
-    try { localStorage.setItem(PROFILE_KEY, JSON.stringify(out)) } catch { throw new ApiError('Your browser blocked saving. Allow site storage and try again.', 0) }
+    try { localStorage.setItem(key, JSON.stringify(out)) } catch { throw new ApiError('Your browser blocked saving. Allow site storage and try again.', 0) }
     return out
   },
-  clear: async (): Promise<void> => { try { localStorage.removeItem(PROFILE_KEY) } catch { /* ignore */ } },
+  clear: async (): Promise<void> => {
+    const key = profileKey()
+    try { if (key) localStorage.removeItem(key) } catch { /* ignore */ }
+  },
 }
 
 const REQUIRED: (keyof Profile)[] = ['branch', 'cgpa', 'active_backlogs', 'internships', 'projects', 'certifications']

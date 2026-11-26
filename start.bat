@@ -1,7 +1,8 @@
 @echo off
 REM PlaceIQ: one-click local start (Windows). Nothing is deployed anywhere.
 REM   1. installs Python and Node packages (first run only)
-REM   2. adds a random PLACEIQ_SALT to .env and builds the synthetic demo if there is no model yet
+REM   2. adds missing secrets to .env (roll-number salt, session secret, placement-cell password)
+REM      and trains on the bundled public datasets if there is no model yet
 REM   3. starts the PlaceIQ engine (127.0.0.1:8765) in its own window
 REM   4. builds (first run) and starts the web app on http://127.0.0.1:3100 and opens it
 setlocal
@@ -26,6 +27,9 @@ if not exist "web\node_modules" (
 )
 
 ".venv\Scripts\python.exe" -m placeiq init
+
+REM Pass .env (salt, session secret, placement-cell password) to the web app as well.
+for /f "usebackq eol=# tokens=1,* delims==" %%A in (".env") do if not "%%B"=="" set "%%A=%%B"
 
 if not exist "placeiq-data\artifacts\model.joblib" (
   echo [PlaceIQ] No model yet: training on the bundled public placement datasets ^(about 2 minutes^)...

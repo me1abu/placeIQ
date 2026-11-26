@@ -1,13 +1,15 @@
-import { BarChart3, Brain, ClipboardCheck, FileText, Gauge, Home, Info, Map, SlidersHorizontal, Tags } from "lucide-react";
+import { BarChart3, LogIn, Brain, ClipboardCheck, FileText, Gauge, Home, Info, Map, SlidersHorizontal, Tags } from "lucide-react";
 import type { ComponentType, SVGProps } from "react";
 
 export type NavItem = { href: string; label: string; icon: ComponentType<SVGProps<SVGSVGElement>> };
-export type NavGroup = { title: string; items: NavItem[] };
+export type NavRole = "student" | "cell" | "guest";
+export type NavGroup = { title: string; items: NavItem[]; roles: NavRole[] };
 
 // One source for the desktop sidebar and the mobile drawer.
 export const NAV: NavGroup[] = [
   {
     title: "Student",
+    roles: ["student"],
     items: [
       { href: "/", label: "Home", icon: Home },
       { href: "/readiness", label: "Readiness report", icon: Gauge },
@@ -18,6 +20,7 @@ export const NAV: NavGroup[] = [
   },
   {
     title: "Placement cell",
+    roles: ["cell"],
     items: [
       { href: "/cell", label: "Batch dashboard", icon: BarChart3 },
       { href: "/cell/model", label: "Model", icon: Brain },
@@ -27,9 +30,20 @@ export const NAV: NavGroup[] = [
   },
   {
     title: "",
+    roles: ["student", "cell", "guest"],
     items: [{ href: "/about", label: "About PlaceIQ", icon: Info }],
   },
+  {
+    title: "",
+    roles: ["guest"],
+    items: [{ href: "/login", label: "Sign in", icon: LogIn }],
+  },
 ];
+
+/** Students never see the placement-cell menu, and the placement cell sees only its own. */
+export function navFor(role: NavRole): NavGroup[] {
+  return NAV.filter((g) => g.roles.includes(role));
+}
 
 export function isActive(href: string, pathname: string): boolean {
   if (href === "/") return pathname === "/";

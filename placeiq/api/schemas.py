@@ -53,6 +53,16 @@ class StudentKey(BaseModel):
     batch_year: int = Field(ge=2000, le=date.today().year + 6)
 
 
+class RollNumber(BaseModel):
+    roll_number: str = Field(min_length=3, max_length=40)
+
+
+class Credentials(BaseModel):
+    """Student sign-in / registration. Roll numbers are letters, digits and - / _ . only."""
+    roll_number: str = Field(min_length=3, max_length=40, pattern=r"^\s*[A-Za-z0-9][A-Za-z0-9/_.\-]*\s*$")
+    password: str = Field(min_length=1, max_length=200)
+
+
 class StudentSave(StudentKey):
     consent: bool
     profile: Profile

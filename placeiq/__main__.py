@@ -1,6 +1,7 @@
 """PlaceIQ engine command line (everything runs on this machine).
 
-    python -m placeiq init     add PLACEIQ_SALT to .env (appends; safe to re-run)
+    python -m placeiq init     add missing secrets (salt, session secret, placement-cell
+                               password) to .env (appends; safe to re-run)
     python -m placeiq public   train on the bundled PUBLIC placement datasets (placeiq-data/public)
                                and clear any synthetic demo rows from the database
     python -m placeiq demo     build a full SYNTHETIC demo: data → ingest → train → extraction
@@ -20,8 +21,11 @@ from placeiq import config
 
 
 def cmd_init(_args) -> None:
-    created = config.ensure_env()
-    print(("Added PLACEIQ_SALT to" if created else "PLACEIQ_SALT already set in") + f" {config.ENV_PATH}")
+    added = config.ensure_env(web=True)
+    print((f"Added {', '.join(added)} to" if added else "PlaceIQ secrets already set in") + f" {config.ENV_PATH}")
+    if "PLACEIQ_ADMIN_PASSWORD" in added:
+        print("  Placement-cell password generated. Find it as PLACEIQ_ADMIN_PASSWORD in .env "
+              "(you can change it there and restart).")
 
 
 def cmd_demo(args) -> None:
@@ -118,8 +122,8 @@ def cmd_serve(args) -> None:
         print("NOTE: no trained model yet. Run `python -m placeiq demo`, or train one from the Placement cell → Model page.")
     url = f"http://{args.host}:{args.port}"
     if args.host not in ("127.0.0.1", "localhost", "::1"):
-        print(f"WARNING: serving on {args.host}. The placement-cell pages have no password, so anyone who can "
-              "reach this address can see batch data and retrain the model. Use 127.0.0.1 unless you mean this.")
+        print(f"WARNING: serving on {args.host}. The engine trusts its caller (the web app checks sign-in), so "
+              "anyone who can reach this address can see batch data and retrain the model. Use 127.0.0.1.")
     print(f"PlaceIQ engine API at {url}  (docs: {url}/docs)   Ctrl+C to stop")
     uvicorn.run("placeiq.api.main:app", host=args.host, port=args.port, reload=args.reload, log_level="info")
 
