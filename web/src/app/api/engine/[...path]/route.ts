@@ -9,7 +9,7 @@ import { allowed, COOKIE, ENGINE, readSession, requiredRole } from "@/lib/auth";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const ALLOWED = new Set(["health", "taxonomy", "parse", "parse-text", "predict", "score", "whatif", "roadmap", "students", "admin"]);
+const ALLOWED = new Set(["health", "taxonomy", "parse", "parse-text", "predict", "score", "whatif", "roadmap", "students", "jobs", "admin"]);
 const PASS_HEADERS = ["content-type", "content-disposition", "cache-control"];
 
 type Ctx = { params: Promise<{ path: string[] }> };
@@ -30,8 +30,9 @@ async function forward(req: Request, ctx: Ctx): Promise<Response> {
   const headers = new Headers();
   const ct = req.headers.get("content-type");
   if (ct) headers.set("content-type", ct);
-  // Tells the engine which student is signed in, so they can only share/withdraw their own profile.
-  if (path[0] === "students" && session?.role === "student") headers.set("x-placeiq-student", session.sub);
+  // Tells the engine which student is signed in: they can only share/withdraw their own profile,
+  // and saved jobs and applications belong to them.
+  if ((path[0] === "students" || path[0] === "jobs") && session?.role === "student") headers.set("x-placeiq-student", session.sub);
   const hasBody = req.method !== "GET" && req.method !== "HEAD";
   let res: Response;
   try {

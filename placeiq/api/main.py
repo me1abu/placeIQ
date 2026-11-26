@@ -20,10 +20,11 @@ import io
 import json
 import re
 import secrets
-from datetime import timezone
+from datetime import date, timezone
 
 import pandas as pd
 from fastapi import APIRouter, Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
+from pydantic import ValidationError
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, Response
 from sqlalchemy import func, select
@@ -31,11 +32,11 @@ from sqlalchemy.orm import Session
 
 from placeiq import config
 from placeiq.accounts import MIN_PASSWORD, burn_time, hash_password, verify_password
-from placeiq.api.schemas import (AnnotationIn, CohortRequest, Credentials, CvText, Profile, RollNumber, ScoreRequest,
-                                 StudentKey, StudentSave)
+from placeiq.api.schemas import (AnnotationIn, ApplicationIn, ApplicationStatusIn, CohortRequest, Credentials, CvText, JobFeedRequest, JobIn,
+                                 Profile, RollNumber, ScoreRequest, StudentKey, StudentSave)
 from placeiq.cohort import primary_gaps, summarize
 from placeiq.data.anonymize import hash_identifier, strip_contact_info
-from placeiq.db import Annotation, StudentAccount, StudentRecord, _now, get_session
+from placeiq.db import Annotation, Application, Job, SavedJob, StudentAccount, StudentRecord, _now, get_session
 from placeiq.eligibility.filter import eligible_companies, load_companies
 from placeiq.explain.guidance import load_bundle, report
 from placeiq.explain.whatif import score, suggestions
@@ -43,6 +44,7 @@ from placeiq.extraction import evaluate as extraction_eval
 from placeiq.extraction.pdf_text import extract_text
 from placeiq.extraction.profile import draft_profile
 from placeiq.extraction.skills import extract_skill_matches, load_taxonomy
+from placeiq.jobs import match as job_match
 from placeiq.roadmap import roadmap
 
 MODEL_PATH = config.MODEL_PATH
@@ -243,6 +245,142 @@ def withdraw_student(body: StudentKey, db: Session = Depends(get_session),
     return {"deleted": True}
 
 
+# ---------------------------------------------------------------- job finder (students)
+# The web app sends the signed-in student's roll-number hash in X-PlaceIQ-Student; every
+# route here needs it, since saved jobs and applications belong to that student.
+def _student(x_placeiq_student: str | None = Header(default=None)) -> str:
+    if not x_placeiq_student:
+        raise HTTPException(401, "Sign in as a student to use the Job Finder.")
+    return x_placeiq_student
+
+
+@api.post("/jobs/feed")
+def job_feed(body: JobFeedRequest, me: str = Depends(_student), db: Session = Depends(get_session)):
+    """Jobs open for applications, each scored against the student's profile (if they have one),
+    plus whether they saved it and the status of their application to it."""
+    today = date.today()
+    saved = set(db.scalars(select(SavedJob.job_id).where(SavedJob.student_hash == me)))
+    applied = dict(db.execute(select(Application.job_id, Application.status)
+                              .where(Application.student_hash == me)).all())
+    profile = body.profile.model_dump() if body.profile else None
+    out = []
+    for job in db.scalars(select(Job).order_by(Job.created_at.desc())):
+        if not job.accepting(today) and job.id not in applied:
+            continue
+        d = job.to_dict()
+        out.append({**d, "accepting": job.accepting(today), "posted_at": _iso(job.created_at),
+                    "match": job_match(d, profile, body.batch_year) if profile else None,
+                    "saved": job.id in saved, "application_status": applied.get(job.id)})
+    return out
+
+
+@api.post("/jobs/{job_id}/save")
+def save_job(job_id: int, me: str = Depends(_student), db: Session = Depends(get_session)):
+    _job_or_404(db, job_id)
+    if db.scalar(select(SavedJob).where(SavedJob.student_hash == me, SavedJob.job_id == job_id)) is None:
+        db.add(SavedJob(student_hash=me, job_id=job_id))
+        db.commit()
+    return {"saved": True}
+
+
+@api.delete("/jobs/{job_id}/save")
+def unsave_job(job_id: int, me: str = Depends(_student), db: Session = Depends(get_session)):
+    row = db.scalar(select(SavedJob).where(SavedJob.student_hash == me, SavedJob.job_id == job_id))
+    if row is not None:
+        db.delete(row)
+        db.commit()
+    return {"saved": False}
+
+
+@api.post("/jobs/{job_id}/apply")
+async def apply_job(job_id: int, data: str = Form(...), cv: UploadFile | None = File(default=None),
+                    me: str = Depends(_student), db: Session = Depends(get_session)):
+    """Apply with name, contact details, the profile snapshot and an optional CV PDF.
+    `data` is the ApplicationIn JSON (multipart, so the CV can ride along)."""
+    try:
+        body = ApplicationIn.model_validate_json(data)
+    except ValidationError as exc:
+        raise HTTPException(422, [{"loc": ["body", *e["loc"]], "msg": e["msg"]} for e in exc.errors()]) from exc
+    if not body.consent:
+        raise HTTPException(400, "Tick the consent box to send your application.")
+    _own_hash(body.roll_number, me)
+    job = _job_or_404(db, job_id)
+    if not job.accepting(date.today()):
+        raise HTTPException(409, "This job is no longer accepting applications.")
+    if db.scalar(select(Application).where(Application.job_id == job_id, Application.student_hash == me)):
+        raise HTTPException(409, "You've already applied to this job.")
+    profile = body.profile.model_dump()
+    m = job_match(job.to_dict(), profile, body.batch_year)
+    if m["band"] == "not_eligible":
+        raise HTTPException(403, "You don't meet this job's eligibility rules: " + "; ".join(m["reasons"]))
+
+    cv_name, cv_bytes = None, None
+    if cv is not None and cv.filename:
+        cv_bytes = await cv.read()
+        if len(cv_bytes) > MAX_PDF_BYTES:
+            raise HTTPException(413, "CV larger than 5 MB.")
+        if not cv_bytes.startswith(b"%PDF"):
+            raise HTTPException(415, "The CV must be a PDF.")
+        cv_name = re.sub(r"[^A-Za-z0-9._ -]", "_", cv.filename)[-120:]
+
+    db.add(Application(
+        job_id=job_id, student_hash=me, roll_number=body.roll_number.upper(), name=body.name, email=body.email,
+        phone=body.phone, batch_year=body.batch_year, skills=";".join(profile["skills"]), match_score=m["score"],
+        cv_filename=cv_name, cv_data=cv_bytes,
+        **{k: profile[k] for k in ("branch", "cgpa", "active_backlogs", "internships", "projects", "certifications")}))
+    db.commit()
+    return {"applied": True, "status": "applied", "match": m}
+
+
+@api.post("/jobs/mine")
+def my_jobs(body: JobFeedRequest, me: str = Depends(_student), db: Session = Depends(get_session)):
+    """The student's applications (newest first, with the job and status) and saved jobs (scored
+    against their profile, like the feed; closed ones included so they can see what happened)."""
+    today = date.today()
+    profile = body.profile.model_dump() if body.profile else None
+    apps = list(db.scalars(select(Application).where(Application.student_hash == me)
+                           .order_by(Application.created_at.desc())))
+    jobs = {j.id: j for j in db.scalars(select(Job).where(Job.id.in_(
+        [a.job_id for a in apps] + list(db.scalars(select(SavedJob.job_id).where(SavedJob.student_hash == me))))))}
+    applications = []
+    for a in apps:
+        job = jobs.get(a.job_id)
+        applications.append({
+            "job_id": a.job_id, "status": a.status, "applied_at": _iso(a.created_at), "updated_at": _iso(a.updated_at),
+            "match_score": a.match_score, "cv_filename": a.cv_filename,
+            "shared": {"name": a.name, "email": a.email, "phone": a.phone, "roll_number": a.roll_number,
+                       "batch_year": a.batch_year, "branch": a.branch, "cgpa": a.cgpa,
+                       "active_backlogs": a.active_backlogs, "skills": [x for x in a.skills.split(";") if x]},
+            "job": {**job.to_dict(), "accepting": job.accepting(today)} if job else None,
+        })
+    applied_ids = {a.job_id for a in apps}
+    saved = []
+    for sj in db.scalars(select(SavedJob).where(SavedJob.student_hash == me).order_by(SavedJob.created_at.desc())):
+        job = jobs.get(sj.job_id)
+        if job is None:
+            continue
+        d = job.to_dict()
+        saved.append({**d, "accepting": job.accepting(today), "saved_at": _iso(sj.created_at),
+                      "match": job_match(d, profile, body.batch_year) if profile else None,
+                      "applied": job.id in applied_ids})
+    return {"applications": applications, "saved": saved}
+
+
+@api.delete("/jobs/{job_id}/apply")
+def withdraw_application(job_id: int, me: str = Depends(_student), db: Session = Depends(get_session)):
+    """Withdraw (delete) an application, with everything it shared. Only while it's still at
+    "applied": once the placement cell has moved it on, the student contacts them instead."""
+    a = db.scalar(select(Application).where(Application.job_id == job_id, Application.student_hash == me))
+    if a is None:
+        raise HTTPException(404, "You haven't applied to this job.")
+    if a.status != "applied":
+        raise HTTPException(409, "The placement cell is already processing this application, so it can't be "
+                                 "withdrawn here. Please contact them.")
+    db.delete(a)
+    db.commit()
+    return {"withdrawn": True}
+
+
 # ---------------------------------------------------------------- admin
 admin = APIRouter(prefix="/admin")
 
@@ -354,6 +492,153 @@ def reset_account(body: RollNumber, db: Session = Depends(get_session)):
 @admin.get("/accounts/count")
 def account_count(db: Session = Depends(get_session)):
     return {"accounts": db.scalar(select(func.count()).select_from(StudentAccount))}
+
+
+# ---------------------------------------------------------------- jobs (placement cell)
+def _job_or_404(db: Session, job_id: int) -> Job:
+    job = db.get(Job, job_id)
+    if job is None:
+        raise HTTPException(404, "Job not found.")
+    return job
+
+
+def _apply_job_fields(job: Job, body: JobIn) -> None:
+    for k in ("company", "title", "location", "job_type", "salary", "description", "min_cgpa", "max_backlogs",
+              "deadline", "status"):
+        setattr(job, k, getattr(body, k))
+    job.skills = ";".join(body.skills)
+    job.branches = ";".join(body.branches)
+    job.batch_years = ";".join(str(y) for y in body.batch_years)
+
+
+def _job_out(job: Job) -> dict:
+    return {**job.to_dict(), "accepting": job.accepting(date.today()),
+            "created_at": _iso(job.created_at), "updated_at": _iso(job.updated_at)}
+
+
+@admin.get("/jobs")
+def list_jobs(db: Session = Depends(get_session)):
+    """Every job, open ones first, newest first, with how many students applied (by status)."""
+    counts: dict[int, dict[str, int]] = {}
+    for job_id, status, n in db.execute(select(Application.job_id, Application.status, func.count())
+                                        .group_by(Application.job_id, Application.status)):
+        counts.setdefault(job_id, {})[status] = n
+    jobs = db.scalars(select(Job).order_by(Job.status.desc(), Job.created_at.desc()))
+    return [{**_job_out(j), "applicants": counts.get(j.id, {})} for j in jobs]
+
+
+@admin.post("/jobs")
+def create_job(body: JobIn, db: Session = Depends(get_session)):
+    job = Job()
+    _apply_job_fields(job, body)
+    db.add(job)
+    db.commit()
+    return _job_out(job)
+
+
+@admin.put("/jobs/{job_id}")
+def update_job(job_id: int, body: JobIn, db: Session = Depends(get_session)):
+    job = _job_or_404(db, job_id)
+    _apply_job_fields(job, body)
+    db.commit()
+    return _job_out(job)
+
+
+@admin.delete("/jobs/{job_id}")
+def delete_job(job_id: int, db: Session = Depends(get_session)):
+    job = _job_or_404(db, job_id)
+    n = db.scalar(select(func.count()).select_from(Application).where(Application.job_id == job_id))
+    if n:
+        raise HTTPException(409, f"{n} student{'s have' if n > 1 else ' has'} applied to this job. "
+                                 "Close it instead, so their applications are kept.")
+    for row in db.scalars(select(SavedJob).where(SavedJob.job_id == job_id)):
+        db.delete(row)
+    db.delete(job)
+    db.commit()
+    return {"deleted": True}
+
+
+# ---------------------------------------------------------------- applicants (placement cell)
+def _application_or_404(db: Session, app_id: int) -> Application:
+    a = db.get(Application, app_id)
+    if a is None:
+        raise HTTPException(404, "Application not found.")
+    return a
+
+
+def _applicant_out(a: Application, job_skills: list[str]) -> dict:
+    skills = [x for x in a.skills.split(";") if x]
+    return {
+        "id": a.id, "job_id": a.job_id, "status": a.status, "name": a.name, "email": a.email, "phone": a.phone,
+        "roll_number": a.roll_number, "batch_year": a.batch_year, "branch": a.branch, "cgpa": a.cgpa,
+        "active_backlogs": a.active_backlogs, "internships": a.internships, "projects": a.projects,
+        "certifications": a.certifications, "skills": skills, "match_score": a.match_score,
+        "have": [s for s in job_skills if s in skills], "missing": [s for s in job_skills if s not in skills],
+        "has_cv": a.cv_data is not None, "cv_filename": a.cv_filename,
+        "applied_at": _iso(a.created_at), "updated_at": _iso(a.updated_at),
+    }
+
+
+def _job_applications(db: Session, job_id: int) -> list[Application]:
+    return list(db.scalars(select(Application).where(Application.job_id == job_id)
+                           .order_by(Application.match_score.desc(), Application.created_at)))
+
+
+@admin.get("/jobs/{job_id}/applications")
+def job_applications(job_id: int, db: Session = Depends(get_session)):
+    """A job's applicants, best skill match first (CVs are fetched separately)."""
+    job = _job_or_404(db, job_id)
+    skills = job.to_dict()["skills"]
+    return {"job": _job_out(job), "applications": [_applicant_out(a, skills) for a in _job_applications(db, job_id)]}
+
+
+@admin.put("/applications/{app_id}/status")
+def set_application_status(app_id: int, body: ApplicationStatusIn, db: Session = Depends(get_session)):
+    a = _application_or_404(db, app_id)
+    a.status = body.status
+    db.commit()
+    return {"id": a.id, "status": a.status, "updated_at": _iso(a.updated_at)}
+
+
+@admin.get("/applications/{app_id}/cv")
+def application_cv(app_id: int, db: Session = Depends(get_session)):
+    a = _application_or_404(db, app_id)
+    if a.cv_data is None:
+        raise HTTPException(404, "This applicant didn't attach a CV.")
+    name = re.sub(r"[^A-Za-z0-9._-]", "_", f"{a.roll_number}_{a.cv_filename or 'cv.pdf'}")
+    return Response(a.cv_data, media_type="application/pdf",
+                    headers={"Content-Disposition": f'attachment; filename="{name}"', "Cache-Control": "no-store"})
+
+
+_FORMULA_START = ("=", "+", "-", "@", chr(9), chr(13))  # tab and carriage return too
+
+
+def _csv_safe(v):
+    """Stop spreadsheet apps treating student-typed text as a formula (CSV injection)."""
+    return "'" + v if isinstance(v, str) and v[:1] in _FORMULA_START else v
+
+
+@admin.get("/jobs/{job_id}/applications/export")
+def export_applications(job_id: int, db: Session = Depends(get_session)):
+    job = _job_or_404(db, job_id)
+    skills = job.to_dict()["skills"]
+    rows = []
+    for a in _job_applications(db, job_id):
+        d = _applicant_out(a, skills)
+        rows.append({
+            "name": _csv_safe(d["name"]), "roll_number": d["roll_number"], "email": _csv_safe(d["email"]),
+            "phone": d["phone"], "branch": d["branch"], "batch_year": d["batch_year"], "cgpa": d["cgpa"],
+            "active_backlogs": d["active_backlogs"], "internships": d["internships"], "projects": d["projects"],
+            "certifications": d["certifications"], "skill_match_pct": round(d["match_score"] * 100),
+            "missing_skills": ";".join(d["missing"]), "skills": ";".join(d["skills"]), "status": d["status"],
+            "cv_attached": "yes" if d["has_cv"] else "no", "applied_at": d["applied_at"],
+        })
+    cols = ["name", "roll_number", "email", "phone", "branch", "batch_year", "cgpa", "active_backlogs", "internships",
+            "projects", "certifications", "skill_match_pct", "missing_skills", "skills", "status", "cv_attached",
+            "applied_at"]
+    slug = re.sub(r"[^A-Za-z0-9]+", "_", f"{job.company}_{job.title}").strip("_")[:60] or f"job_{job_id}"
+    return Response(pd.DataFrame(rows, columns=cols).to_csv(index=False), media_type="text/csv",
+                    headers={"Content-Disposition": f'attachment; filename="applicants_{slug}.csv"'})
 
 
 @admin.get("/companies")

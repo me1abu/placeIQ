@@ -100,7 +100,7 @@ export function requiredRole(pathname: string): Role | "any" | null {
   const p = normalisePath(pathname);
   if (PUBLIC_PAGES.has(p) || p.startsWith("/api/auth/") || p === "/api/engine/health") return null;
   if (p === "/cell" || p.startsWith("/cell/") || p.startsWith("/api/engine/admin")) return "cell";
-  if (p.startsWith("/api/engine/students")) return "student";
+  if (p.startsWith("/api/engine/students") || p.startsWith("/api/engine/jobs")) return "student";
   if (p.startsWith("/api/")) return "any";
   return "student"; // student pages: home, profile, readiness, what-if, roadmap
 }

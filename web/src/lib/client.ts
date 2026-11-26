@@ -142,6 +142,56 @@ export interface AnnotationSummary { resume_id: string; n_gold: number; annotato
 export interface AnnotationDetail { resume_id: string; text: string; gold_skills: string[]; annotator: string; predicted: SkillMatch[] }
 export interface Company { name: string; min_cgpa: number; max_active_backlogs: number; branches: string[]; required_skills_any: string[] }
 
+export type JobType = 'full_time' | 'internship'
+export interface JobInput {
+  company: string
+  title: string
+  location: string
+  job_type: JobType
+  salary: string
+  description: string
+  skills: string[]
+  min_cgpa: number
+  max_backlogs: number | null
+  branches: string[]
+  batch_years: number[]
+  deadline: string | null
+  status: 'open' | 'closed'
+}
+export interface Job extends JobInput { id: number; accepting: boolean; created_at: string | null; updated_at: string | null; applicants?: Partial<Record<ApplicationStatus, number>> }
+
+export type MatchBand = 'eligible' | 'almost' | 'stretch' | 'not_eligible'
+export interface JobMatch { score: number; band: MatchBand; have: string[]; missing: string[]; reasons: string[] }
+export type ApplicationStatus = 'applied' | 'shortlisted' | 'interview' | 'selected' | 'rejected'
+export interface FeedJob extends JobInput {
+  id: number
+  accepting: boolean
+  posted_at: string | null
+  match: JobMatch | null
+  saved: boolean
+  application_status: ApplicationStatus | null
+}
+export interface MyApplication {
+  job_id: number
+  status: ApplicationStatus
+  applied_at: string | null
+  updated_at: string | null
+  match_score: number
+  cv_filename: string | null
+  shared: { name: string; email: string; phone: string; roll_number: string; batch_year: number | null; branch: string; cgpa: number; active_backlogs: number; skills: string[] }
+  job: (JobInput & { id: number; accepting: boolean }) | null
+}
+export interface SavedJobEntry extends JobInput { id: number; accepting: boolean; saved_at: string | null; match: JobMatch | null; applied: boolean }
+export interface Applicant {
+  id: number; job_id: number; status: ApplicationStatus; name: string; email: string; phone: string; roll_number: string
+  batch_year: number | null; branch: string; cgpa: number; active_backlogs: number; internships: number; projects: number
+  certifications: number; skills: string[]; match_score: number; have: string[]; missing: string[]
+  has_cv: boolean; cv_filename: string | null; applied_at: string | null; updated_at: string | null
+}
+export interface ApplicationInput {
+  name: string; email: string; phone: string; roll_number: string; batch_year: number | null; consent: boolean; profile: Profile
+}
+
 export class ApiError extends Error {
   status: number
   constructor(message: string, status: number) { super(message); this.status = status }
@@ -190,11 +240,28 @@ export const api = {
   roadmap: (p: Profile) => call<Roadmap>('/roadmap', json(p)),
   saveStudent: (roll_number: string, batch_year: number, profile: Profile) =>
     call<{ saved: boolean; updated: boolean }>('/students', json({ roll_number, batch_year, consent: true, profile })),
+  jobFeed: (profile: Profile | null, batch_year: number | null) => call<FeedJob[]>('/jobs/feed', json({ profile, batch_year })),
+  saveJob: (id: number) => call<{ saved: boolean }>(`/jobs/${id}/save`, { method: 'POST' }),
+  unsaveJob: (id: number) => call<{ saved: boolean }>(`/jobs/${id}/save`, { method: 'DELETE' }),
+  applyJob: (id: number, a: ApplicationInput, cv: File | null) =>
+    call<{ applied: boolean; match: JobMatch }>(`/jobs/${id}/apply`, form(cv ? { data: JSON.stringify(a), cv } : { data: JSON.stringify(a) })),
+  myJobs: (profile: Profile | null, batch_year: number | null) =>
+    call<{ applications: MyApplication[]; saved: SavedJobEntry[] }>('/jobs/mine', json({ profile, batch_year })),
+  withdrawApplication: (jobId: number) => call<{ withdrawn: boolean }>(`/jobs/${jobId}/apply`, { method: 'DELETE' }),
   withdrawStudent: (roll_number: string, batch_year: number) =>
     call<{ deleted: boolean }>('/students/withdraw', json({ roll_number, batch_year })),
 }
 
 export const adminApi = {
+  jobs: () => call<Job[]>('/admin/jobs'),
+  createJob: (j: JobInput) => call<Job>('/admin/jobs', json(j)),
+  updateJob: (id: number, j: JobInput) => call<Job>(`/admin/jobs/${id}`, json(j, 'PUT')),
+  jobApplications: (id: number) => call<{ job: Job; applications: Applicant[] }>(`/admin/jobs/${id}/applications`),
+  setApplicationStatus: (appId: number, status: ApplicationStatus) =>
+    call<{ id: number; status: ApplicationStatus }>(`/admin/applications/${appId}/status`, json({ status }, 'PUT')),
+  applicationCvUrl: (appId: number) => `/api/engine/admin/applications/${appId}/cv`,
+  applicationsCsvUrl: (jobId: number) => `/api/engine/admin/jobs/${jobId}/applications/export`,
+  deleteJob: (id: number) => call<{ deleted: boolean }>(`/admin/jobs/${id}`, { method: 'DELETE' }),
   accountCount: () => call<{ accounts: number }>('/admin/accounts/count'),
   resetAccount: (roll_number: string) =>
     call<{ reset: boolean }>('/admin/accounts/reset', json({ roll_number })),
@@ -253,6 +320,20 @@ export const profileApi = {
   clear: async (): Promise<void> => {
     const key = profileKey()
     try { if (key) localStorage.removeItem(key) } catch { /* ignore */ }
+  },
+}
+
+// Name, email and phone a student entered when applying, remembered (in this browser only) for
+// their next application.
+export type Contact = { name: string; email: string; phone: string }
+export const contactApi = {
+  get: (): Contact | null => {
+    const key = profileKey()
+    try { const raw = key && localStorage.getItem(key.replace('profile', 'contact')); return raw ? (JSON.parse(raw) as Contact) : null } catch { return null }
+  },
+  save: (c: Contact): void => {
+    const key = profileKey()
+    try { if (key) localStorage.setItem(key.replace('profile', 'contact'), JSON.stringify(c)) } catch { /* ignore */ }
   },
 }
 
