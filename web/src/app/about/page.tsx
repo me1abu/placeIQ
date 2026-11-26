@@ -1,7 +1,7 @@
 import type { ComponentType, SVGProps } from "react";
 import Link from "next/link";
 import {
-  BarChart3, Brain, ClipboardCheck, FileText, Gauge, Lock, Map, Scale, SlidersHorizontal, Sparkles, Tags, Users,
+  BarChart3, Brain, Briefcase, ClipboardCheck, ClipboardList, FileText, Gauge, Lock, Map, Scale, SlidersHorizontal, Sparkles, Tags, UserCheck, Users,
 } from "lucide-react";
 import { ButtonLink, Card, CardTitle, PageHeader } from "@/components/ui";
 import { DataSources } from "./data-sources";
@@ -27,6 +27,16 @@ const STUDENT: Feature[] = [
     points: ["Steps ordered by how much they help", "The expected estimate after each step", "Only things you can actually change"],
   },
   {
+    icon: Briefcase, title: "Job Finder", href: "/jobs",
+    body: "Browse the openings your placement cell posts, each matched against your profile.",
+    points: ["Eligibility checked first: CGPA, backlogs, branch and batch", "Skill match: Eligible, Almost there or Stretch, with the skills you're missing", "Save jobs and apply with your CV in a couple of clicks"],
+  },
+  {
+    icon: ClipboardList, title: "My applications", href: "/applications",
+    body: "Track every job you've applied to in one place.",
+    points: ["Live status: applied, shortlisted, interview, selected", "Withdraw while it's still at Applied", "Every application listed with its job and date"],
+  },
+  {
     icon: FileText, title: "Profile & CV skill extraction", href: "/profile",
     body: "Upload your CV as a PDF and PlaceIQ picks out your skills automatically, so you don't have to type them.",
     points: ["Recognises 321 skills, including common spelling variants", "You review and edit everything it finds", "Your profile stays in your browser; the CV is never stored"],
@@ -38,6 +48,16 @@ const CELL: Feature[] = [
     icon: BarChart3, title: "Batch dashboard", href: "/cell",
     body: "The readiness of the whole batch at a glance, from anonymised profiles students chose to share.",
     points: ["Readiness of each batch year and at-risk students", "Mean estimate by branch", "What holds the batch back and which skills are missing", "Export to CSV"],
+  },
+  {
+    icon: Briefcase, title: "Job postings", href: "/cell/jobs",
+    body: "Post openings with their eligibility rules and required skills; students see them on their Job Finder.",
+    points: ["Minimum CGPA, maximum backlogs, branches and batch", "Required skills drive each student's match", "Close a job when hiring ends"],
+  },
+  {
+    icon: UserCheck, title: "Applicants", href: "/cell/applicants",
+    body: "Review everyone who applied to a job, best skill match first.",
+    points: ["Academics, matched and missing skills for each applicant", "Move applicants through Shortlisted, Interview and Selected", "Download CVs and export the list to CSV"],
   },
   {
     icon: Users, title: "Training groups", href: "/cell",
@@ -67,9 +87,9 @@ const CELL: Feature[] = [
 ];
 
 const STEPS = [
-  { n: "1", title: "Build your profile", body: "Enter your academics or upload your CV; skills are extracted for you." },
+  { n: "1", title: "Sign in and build your profile", body: "Register with your roll number, then enter your academics or upload your CV; skills are extracted for you." },
   { n: "2", title: "Get your estimate", body: "The model predicts your placement chance and explains why." },
-  { n: "3", title: "Improve and track", body: "Test changes in the simulator and follow your roadmap." },
+  { n: "3", title: "Improve and apply", body: "Follow your roadmap, then apply to jobs you're eligible for and track the result." },
 ];
 
 function FeatureCard({ f }: { f: Feature }) {
@@ -93,8 +113,8 @@ export default function About() {
   return (
     <>
       <PageHeader eyebrow="About" title="What PlaceIQ does" aside={<ButtonLink href="/profile">Get started</ButtonLink>}>
-        PlaceIQ predicts how ready you are for campus placement, explains what&apos;s holding you back, and shows the fastest way to
-        improve. Placement cells get a live view of the whole batch.
+        PlaceIQ predicts how ready you are for campus placement, explains what&apos;s holding you back, shows the fastest way to
+        improve, and connects you to the jobs your placement cell posts. Placement cells get a live view of the whole batch and every applicant.
       </PageHeader>
 
       <div className="mt-5 grid gap-4 sm:grid-cols-3">
@@ -108,10 +128,10 @@ export default function About() {
       </div>
 
       <h2 className="mt-10 flex items-center gap-2 font-display text-2xl text-headline"><Sparkles className="size-5 text-brand-text" aria-hidden /> For students</h2>
-      <div className="mt-4 grid gap-5 md:grid-cols-2">{STUDENT.map((f) => <FeatureCard key={f.title} f={f} />)}</div>
+      <div className="mt-4 grid gap-5 md:grid-cols-2 xl:grid-cols-3">{STUDENT.map((f) => <FeatureCard key={f.title} f={f} />)}</div>
 
       <h2 className="mt-10 flex items-center gap-2 font-display text-2xl text-headline"><Lock className="size-5 text-brand-text" aria-hidden /> For the placement cell</h2>
-      <p className="mt-1 text-sm text-muted">Password-protected tools for placement officers.</p>
+      <p className="mt-1 text-sm text-muted">Password-protected tools for placement officers. Students never see this menu.</p>
       <div className="mt-4 grid gap-5 md:grid-cols-2 xl:grid-cols-3">{CELL.map((f) => <FeatureCard key={f.title} f={f} />)}</div>
 
       <div className="mt-10 grid gap-5 lg:grid-cols-2">
