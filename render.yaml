@@ -14,6 +14,12 @@ services:
       # Secret for hashing roll numbers. Render generates a random value once and keeps it.
       - key: PLACEIQ_SALT
         generateValue: true
+      # Signs sign-in cookies (students and placement cell). Generated once by Render.
+      - key: PLACEIQ_SESSION_SECRET
+        generateValue: true
+      # External PostgreSQL (e.g. Neon free). Without it, student accounts are wiped on every restart.
+      - key: DATABASE_URL
+        sync: false
       # The free plan is too small to retrain online; the model built into the image is used.
       - key: PLACEIQ_DISABLE_TRAINING
         value: "1"

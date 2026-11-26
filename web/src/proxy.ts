@@ -1,19 +1,28 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { adminPassword, COOKIE, isProtectedPath, validSession } from "@/lib/auth";
+import { allowed, COOKIE, normalisePath, readSession, requiredRole } from "@/lib/auth";
 
-// Guards the placement-cell pages and the engine's admin API when a password is configured.
+// Every page and API call passes through here. Students can't open placement-cell pages and
+// the placement cell uses its own pages; anyone not signed in is sent to /login.
+// The engine route re-checks API access on the decoded path, so this is not the only guard.
 export async function proxy(req: NextRequest) {
-  const password = adminPassword();
   const { pathname, search } = req.nextUrl;
-  if (!password || !isProtectedPath(pathname)) return NextResponse.next();
-  if (await validSession(req.cookies.get(COOKIE)?.value, password)) return NextResponse.next();
+  const need = requiredRole(pathname);
+  if (need === null) return NextResponse.next();
+  const session = await readSession(req.cookies.get(COOKIE)?.value);
+  if (allowed(need, session)) return NextResponse.next();
+
   if (pathname.startsWith("/api/")) {
-    return NextResponse.json({ detail: "Placement-cell sign-in required." }, { status: 401 });
+    const msg = session ? "Your account can't use this." : "Please sign in.";
+    return NextResponse.json({ detail: msg }, { status: session ? 403 : 401 });
   }
   const url = req.nextUrl.clone();
   url.pathname = "/login";
-  url.search = `?next=${encodeURIComponent(pathname + search)}`;
+  url.search = "";
+  url.searchParams.set("next", normalisePath(pathname) + search);
+  if (need !== "any") url.searchParams.set("need", need);
+  if (session) url.searchParams.set("as", session.role);
   return NextResponse.redirect(url);
 }
 
-export const config = { matcher: ["/cell", "/cell/:path*", "/api/engine/admin/:path*"] };
+// Everything except Next's own static files and the favicon.
+export const config = { matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"] };

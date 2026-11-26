@@ -15,3 +15,6 @@ python-multipart>=0.0.9
 pydantic>=2.6
 sqlalchemy>=2.0
 python-dotenv>=1.0
+# PostgreSQL driver: lets DATABASE_URL point at a hosted database so student accounts and
+# shared profiles survive restarts on hosts without a persistent disk (e.g. Render free).
+psycopg[binary]>=3.1

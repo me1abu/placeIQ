@@ -45,6 +45,15 @@ To stop PlaceIQ, close the web-app terminal window and the minimized **PlaceIQ e
 
 ## Using PlaceIQ
 
+### Signing in
+
+Everyone signs in at **/login**, which has two tabs:
+
+- **Student**: roll number and password. On first use, choose **Create a student account**. The roll number is stored only as a salted, irreversible code, and the password only as a PBKDF2 hash.
+- **Placement cell**: the shared placement-cell password (`PLACEIQ_ADMIN_PASSWORD` in `.env`). The first run of `start.bat` generates one; change it in `.env` and restart.
+
+Students can't open placement-cell pages or the admin API, and they don't see those menu items. A student can only share or withdraw their own profile. If a student forgets their password, the placement cell can reset their sign-in from the Batch dashboard.
+
 ### Students
 
 1. **Profile and CV** — Upload a PDF or paste a CV. PlaceIQ extracts skills, projects, internships, certifications, and CGPA where available. Confirm the branch, CGPA, backlogs, and batch, then save the profile.

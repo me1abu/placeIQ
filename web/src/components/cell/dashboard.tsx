@@ -200,6 +200,41 @@ export function CellDashboard({ taxonomy }: { taxonomy: Record<string, string> }
           </Section>
         </>
       )}
+      <StudentAccounts />
     </>
+  );
+}
+
+/** Forgotten passwords: the cell deletes the student's sign-in so they can create it again. */
+function StudentAccounts() {
+  const [count, setCount] = useState<number | null>(null);
+  const [roll, setRoll] = useState("");
+  const [msg, setMsg] = useState<{ tone: "ok" | "error"; text: string } | null>(null);
+  useEffect(() => { adminApi.accountCount().then((r) => setCount(r.accounts)).catch(() => {}); }, []);
+
+  async function reset() {
+    const r = roll.trim().toUpperCase();
+    if (r.length < 3) { setMsg({ tone: "error", text: "Enter the student's roll number." }); return; }
+    if (!confirm(`Reset the sign-in for ${r}? They will create a new password the next time they sign in. Their shared profile is kept.`)) return;
+    try {
+      await adminApi.resetAccount(r);
+      setMsg({ tone: "ok", text: `Sign-in for ${r} was reset. Ask them to choose "Create a student account" again.` });
+      setRoll("");
+      setCount((c) => (c === null ? c : Math.max(0, c - 1)));
+    } catch (e) { setMsg({ tone: "error", text: (e as Error).message }); }
+  }
+
+  return (
+    <Section title="Student accounts">
+      <p className="mb-3 text-xs text-faint">
+        {count === null ? "" : `${count} student account${count === 1 ? "" : "s"} registered. `}
+        If a student forgets their password, reset their sign-in here.
+      </p>
+      <div className="flex max-w-md gap-2">
+        <input aria-label="Student roll number" placeholder="Roll / enrolment number" className={inputCls} value={roll} onChange={(e) => setRoll(e.target.value)} />
+        <Button variant="outline" onClick={reset}>Reset sign-in</Button>
+      </div>
+      {msg && <Notice tone={msg.tone} className="mt-3">{msg.text}</Notice>}
+    </Section>
   );
 }
